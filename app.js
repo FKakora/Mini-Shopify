@@ -6,6 +6,14 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", 
 const COLORS = ["#c9d6e8", "#e8d5c9", "#d3e8c9", "#e8c9dc", "#e8e3c9", "#c9e8e4"];
 
 /* ---------- data ---------- */
+const sampleOrders = () => {
+  const n = [["Naledi M.", "naledi@example.com"], ["Ayanda K.", "ayanda@example.com"], ["Pieter v.", "pieter@example.com"], ["Sarah J.", "sarah@example.com"]];
+  const t = [["Canvas Tote Bag", 1, 189], ["Ceramic Mug", 2, 129], ["Cotton T-Shirt", 1, 249], ["Wool Beanie", 2, 159]];
+  return Array.from({length: 8}, (_, i) => {
+    const c = n[i % 4], p = t[i % 4], d = new Date(Date.now() - (i % 7) * 864e5).toISOString().slice(0, 10);
+    return {id: 1000 - i, date: d, email: c[1], name: c[0], items: [{id: i % 4 + 1, title: p[0], q: p[1]}], total: p[1] * p[2], status: i < 2 ? "Unfulfilled" : "Fulfilled"};
+  });
+};
 const seed = () => ({
   pid: 7, oid: 1001,
   products: [
@@ -16,7 +24,7 @@ const seed = () => ({
     {id: 5, title: "Soy Candle", price: 219, stock: 0, collection: "Home", status: "active", color: COLORS[4]},
     {id: 6, title: "Leather Wallet", price: 449, stock: 9, collection: "Accessories", status: "draft", color: COLORS[5]}
   ],
-  orders: [],
+  orders: sampleOrders(),
   discounts: [{code: "WELCOME10", pct: 10, active: true}]
 });
 let db = null;
@@ -25,7 +33,7 @@ if (!db || !db.products) db = seed();
 const save = () => { try { localStorage.setItem("ms-db", JSON.stringify(db)); } catch (e) {} };
 
 /* ---------- ui state ---------- */
-const ui = {mode: "shop", tab: "dash", cat: "All", q: "", cart: [], code: "", open: false, step: "cart", msg: ""};
+const ui = {mode: "shop", tab: "dash", cat: "All", q: "", sort: "feat", cart: [], code: "", open: false, step: "cart", msg: ""};
 const findP = id => db.products.find(p => p.id == id);
 
 function toast(t) {
@@ -47,6 +55,8 @@ function calc() {
 function grid() {
   const q = ui.q.toLowerCase();
   const l = db.products.filter(p => p.status === "active" && (ui.cat === "All" || p.collection === ui.cat) && p.title.toLowerCase().includes(q));
+  if (ui.sort === "lo") l.sort((a, b) => a.price - b.price);
+  if (ui.sort === "hi") l.sort((a, b) => b.price - a.price);
   if (!l.length) return `<div class="empty">No products found. Try another search or collection.</div>`;
   return l.map(p => `<div class="card"><div class="sw" style="background:${p.color}">${esc(p.title[0])}</div>
     <div class="info"><h3>${esc(p.title)}</h3><span class="muted">${esc(p.collection)}${p.stock > 0 && p.stock <= 5 ? " · only " + p.stock + " left" : ""}</span><b>${R(p.price)}</b></div>
@@ -56,6 +66,7 @@ function shop() {
   const cats = ["All", ...new Set(db.products.filter(p => p.status === "active").map(p => p.collection))];
   return `<main class="wrap"><section class="hero"><h1>Mini Store</h1><p>Simple goods, delivered. Free delivery over R800.</p></section>
   <div class="tools"><input id="q" type="search" placeholder="Search products" aria-label="Search products" value="${esc(ui.q)}">
+  <select id="sort" aria-label="Sort products"><option value="feat">Featured</option><option value="lo" ${ui.sort === "lo" ? "selected" : ""}>Price: low to high</option><option value="hi" ${ui.sort === "hi" ? "selected" : ""}>Price: high to low</option></select>
   <div class="chips" role="group" aria-label="Collections">${cats.map(c => `<button class="chip" aria-pressed="${c === ui.cat}" data-act="cat" data-v="${esc(c)}">${esc(c)}</button>`).join("")}</div></div>
   <div class="grid" id="grid">${grid()}</div></main>`;
 }
@@ -92,8 +103,11 @@ const tabs = {
   dash() {
     const live = db.orders.filter(o => o.status !== "Cancelled"), sales = live.reduce((s, o) => s + o.total, 0);
     const low = db.products.filter(p => p.stock <= 5);
+    const days = Array.from({length: 7}, (_, k) => { const d = new Date(Date.now() - (6 - k) * 864e5).toISOString().slice(0, 10); return {d: d.slice(5), v: live.filter(o => o.date === d).reduce((s, o) => s + o.total, 0)}; });
+    const mx = Math.max(1, ...days.map(x => x.v));
     return `<h2>Dashboard</h2><div class="stats"><div><span>Total sales</span><b>${R(sales)}</b></div><div><span>Orders</span><b>${live.length}</b></div>
     <div><span>To fulfil</span><b>${db.orders.filter(o => o.status === "Unfulfilled").length}</b></div><div><span>Average order</span><b>${live.length ? R(sales / live.length) : "–"}</b></div></div>
+    <h3>Sales, last 7 days</h3><div class="chart" role="img" aria-label="Sales per day: ${days.map(x => x.d + " " + R(x.v)).join(", ")}">${days.map(x => `<div><i style="height:${Math.round(x.v / mx * 100)}%"></i><span>${x.d}</span></div>`).join("")}</div>
     <h3>Low stock</h3>${low.length ? `<ul class="list">${low.map(p => `<li>${esc(p.title)} <b>${p.stock} left</b></li>`).join("")}</ul>` : `<p class="muted">All products are well stocked.</p>`}
     <h3>Recent orders</h3>${ordersTable(db.orders.slice(0, 5), false)}`;
   },
@@ -106,7 +120,13 @@ const tabs = {
     <td><select data-chg="status" data-v="${p.id}" aria-label="Status for ${esc(p.title)}">${["active", "draft"].map(s => `<option ${p.status === s ? "selected" : ""}>${s}</option>`).join("")}</select></td>
     <td><button class="link" data-act="delp" data-v="${p.id}">Delete</button></td></tr>`).join("")}</tbody></table></div>`;
   },
-  orders() { return `<h2>Orders</h2>${ordersTable(db.orders, true)}`; },
+  orders() { return `<h2>Orders</h2><p><button class="btn ghost" data-act="csv">Export CSV</button></p>${ordersTable(db.orders, true)}`; },
+  customers() {
+    const m = {};
+    db.orders.filter(o => o.status !== "Cancelled").forEach(o => { const c = m[o.email] || (m[o.email] = {name: o.name, email: o.email, n: 0, s: 0}); c.n++; c.s += o.total; });
+    const l = Object.values(m).sort((a, b) => b.s - a.s);
+    return `<h2>Customers</h2>${l.length ? `<div class="scroll"><table><thead><tr><th>Customer</th><th>Orders</th><th>Total spent</th></tr></thead><tbody>${l.map(c => `<tr><td>${esc(c.name)}<br><span class="muted">${esc(c.email)}</span></td><td>${c.n}</td><td>${R(c.s)}</td></tr>`).join("")}</tbody></table></div>` : `<p class="muted">No customers yet. They appear when someone places an order.</p>`}`;
+  },
   discounts() {
     return `<h2>Discount codes</h2><form id="df" class="form" novalidate><input name="code" placeholder="Code, e.g. SAVE20" aria-label="Code"><input name="pct" type="number" min="1" max="90" placeholder="Percent off" aria-label="Percent off">
     <button class="btn">Add code</button><span class="err" id="derr"></span></form>
@@ -115,7 +135,7 @@ const tabs = {
   }
 };
 function admin() {
-  const t = [["dash", "Dashboard"], ["products", "Products"], ["orders", "Orders"], ["discounts", "Discounts"]];
+  const t = [["dash", "Dashboard"], ["products", "Products"], ["orders", "Orders"], ["discounts", "Discounts"], ["customers", "Customers"]];
   return `<div class="admin"><nav class="side" aria-label="Admin">${t.map(([k, l]) => `<button class="${ui.tab === k ? "on" : ""}" data-act="tab" data-v="${k}">${l}</button>`).join("")}
   <button class="reset" data-act="reset">Reset demo data</button></nav><section class="main">${tabs[ui.tab]()}</section></div>`;
 }
@@ -160,6 +180,11 @@ const actions = {
   },
   tog: v => { const d = db.discounts.find(x => x.code === v); d.active = !d.active; save(); render(); },
   deld: v => { db.discounts = db.discounts.filter(x => x.code !== v); save(); render(); },
+  csv: () => {
+    const rows = [["Order", "Date", "Name", "Email", "Items", "Total", "Status"], ...db.orders.map(o => [o.id, o.date, o.name, o.email, o.items.map(i => i.title + " x" + i.q).join("; "), o.total, o.status])];
+    const t = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(",")).join("\n");
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([t], {type: "text/csv"})); a.download = "orders.csv"; a.click();
+  },
   reset: () => { if (confirm("Reset all products, orders and codes?")) { db = seed(); ui.cart = []; save(); render(); } }
 };
 document.addEventListener("click", e => {
@@ -175,6 +200,9 @@ document.addEventListener("change", e => {
 });
 document.addEventListener("input", e => {
   if (e.target.id === "q") { ui.q = e.target.value; $("#grid").innerHTML = grid(); }
+});
+document.addEventListener("change", e => {
+  if (e.target.id === "sort") { ui.sort = e.target.value; $("#grid").innerHTML = grid(); }
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape" && ui.open) actions.closecart(); });
 
